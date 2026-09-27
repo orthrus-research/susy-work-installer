@@ -15,7 +15,11 @@ curl -fsSL https://susy.work/install.sh | bash
 ```
 
 The installer prints the full path to `workbench-tui` for guided setup. It
-installs under the user's data directory and does not change the shell profile.
+installs under the user's data directory, places command shortcuts in
+`~/.local/bin`, and configures new Bash and zsh sessions to find them. Open a
+new terminal after setup, or run `export PATH="$HOME/.local/bin:$PATH"` in the
+current shell. Existing conflicting files are left alone and reported. A repeat
+run repairs PATH setup without downloading the bundle.
 The [release notes](https://github.com/orthrus-research/Workbench/releases/tag/linux-x64-mvp-0.1.2)
 describe the included components and current limits.
 
@@ -25,6 +29,12 @@ Replace `public/install.sh` with the hook rendered from the exact new bundle.
 Regenerate `public/install.sh.sha256`, check the hook's embedded tag, archive
 URL, and SHA-256 against the bundle descriptor, and publish the matching GitHub
 release asset before deploying the site.
+
+The 0.1.2 PATH correction is a hook-only revision: publish
+`workbench-install-linux-x64-path-v2.sh` and `SHA256SUMS-path-v2` as additional
+assets on the existing release. Keep its original hook, `SHA256SUMS`, descriptor
+and bundle unchanged. The revised hook must still pin that exact bundle;
+verify the public asset and checksum before updating `public/install.sh`.
 
 ## Cloudflare Pages
 
