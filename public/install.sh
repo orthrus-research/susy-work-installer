@@ -1,0 +1,205 @@
+#!/bin/sh
+# Generated for one reviewed release. Run the released copy, not this template.
+set -eu
+
+RELEASE_TAG='linux-x64-mvp-0.1.2'
+BUNDLE_EDITION='supersymmetry-client'
+BUNDLE_URL='https://github.com/orthrus-research/Workbench/releases/download/linux-x64-mvp-0.1.2/workbench-linux-x64-py314-linux-x64-mvp-0.1.2.tar.gz'
+BUNDLE_SHA256='fd4f72d6f61ee3b57ff12df1fbb2adf2666c22ba631363fcdfe6cf6aeb50ce5a'
+BUNDLE_DIRECTORY='workbench-linux-x64-py314'
+PYTHON_URL='https://github.com/astral-sh/python-build-standalone/releases/download/20260924/cpython-3.14.7%2B20260924-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz'
+PYTHON_SHA256='bd0d0568ccded07bbf1c87727230dc5dd0187e706a87da23c4de78388a229b78'
+PYTHON_VERSION='3.14.7'
+PYTHON_RUNTIME_ID='cpython-3.14.7+20260924'
+
+fail() {
+    printf 'Workbench install failed: %s\n' "$1" >&2
+    exit 1
+}
+
+download() {
+    curl --fail --location --silent --show-error --retry 3 \
+        --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        --output "$2" "$1"
+}
+
+verify_hash() {
+    actual=$(sha256sum "$1" | awk '{print $1}')
+    [ "$actual" = "$2" ] || fail "downloaded $(basename "$1") differs from the reviewed SHA-256"
+}
+
+check_host() {
+    [ "$(uname -s)" = Linux ] || fail 'this release requires Linux x64; no other host bundle is qualified'
+    [ "$(uname -m)" = x86_64 ] || fail 'this release requires Linux x64; no other architecture is qualified'
+    libc=$(getconf GNU_LIBC_VERSION 2>/dev/null || true)
+    case "$libc" in
+        'glibc '*) ;;
+        *) fail 'this release requires GNU libc' ;;
+    esac
+    version=${libc#glibc }
+    major=${version%%.*}
+    minor=${version#*.}
+    minor=${minor%%.*}
+    case "$major:$minor" in
+        *[!0-9:]*|:*) fail 'cannot determine GNU libc version' ;;
+    esac
+    if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 28 ]; }; then
+        fail 'this release requires GNU libc 2.28 or newer'
+    fi
+}
+
+check_python() {
+    [ -x "$1/python/bin/python3.14" ] || fail "managed Python is incomplete: $1"
+    "$1/python/bin/python3.14" -I -c \
+        'import sys, venv; assert sys.version_info[:3] == tuple(map(int, sys.argv[1].split(".")))' \
+        "$PYTHON_VERSION" || fail "managed Python differs from $PYTHON_VERSION"
+}
+
+prepare_python() {
+    runtime="$install_root/runtimes/$PYTHON_RUNTIME_ID"
+    if [ -e "$runtime" ] || [ -L "$runtime" ]; then
+        [ ! -L "$runtime" ] || fail "managed Python path is a link: $runtime"
+        check_python "$runtime"
+        printf '%s\n' "$runtime/python/bin/python3.14"
+        return
+    fi
+    stage=$(mktemp -d "$install_root/.python.XXXXXXXX") || fail 'cannot create Python staging directory'
+    archive="$stage/python.tar.gz"
+    printf 'Downloading pinned Python %s...\n' "$PYTHON_VERSION" >&2
+    download "$PYTHON_URL" "$archive"
+    verify_hash "$archive" "$PYTHON_SHA256"
+    mkdir "$stage/runtime"
+    tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$stage/runtime"
+    check_python "$stage/runtime"
+    mv "$stage/runtime" "$runtime"
+    rm -f "$archive"
+    rmdir "$stage"
+    printf '%s\n' "$runtime/python/bin/python3.14"
+}
+
+already_installed() {
+    destination="$install_root/installs/$RELEASE_TAG"
+    if [ ! -e "$destination" ] && [ ! -L "$destination" ]; then
+        return 1
+    fi
+    [ ! -L "$destination" ] || fail "existing installation path is a link: $destination"
+    retained_bundle="$install_root/bundles/$RELEASE_TAG"
+    managed_python="$install_root/runtimes/$PYTHON_RUNTIME_ID/python/bin/python3.14"
+    if [ -f "$destination/workbench-install.json" ] \
+        && grep -Fq '"state": "installed"' "$destination/workbench-install.json" \
+        && [ -f "$destination/workbench-hook.json" ] \
+        && grep -Fq '"state": "installed"' "$destination/workbench-hook.json" \
+        && grep -Fq "\"archive_sha256\": \"$BUNDLE_SHA256\"" "$destination/workbench-hook.json" \
+        && [ -d "$retained_bundle" ] && [ ! -L "$retained_bundle" ] \
+        && [ -x "$managed_python" ] \
+        && "$managed_python" -I -B "$retained_bundle/verify_install_bundle.py" "$retained_bundle" --release-tag "$RELEASE_TAG" >/dev/null 2>&1 \
+        && [ -x "$destination/bin/workbench" ] \
+        && [ -x "$destination/bin/workbench-tui" ] \
+        && "$destination/bin/workbench" version --json >/dev/null 2>&1; then
+        printf 'Workbench %s is already installed.\n' "$RELEASE_TAG"
+        printf 'Open guided setup: %s/bin/workbench-tui\n' "$destination"
+        printf 'Check setup: %s/bin/workbench setup --check\n' "$destination"
+        printf 'Command shortcuts: %s/bin (add this directory to PATH if desired).\n' "$install_root"
+        printf 'Axiom engine ZIP: %s\n' \
+            "$retained_bundle"/axiom/workbench-axiom-engine-*.zip
+        return 0
+    fi
+    fail "an incomplete or different installation is retained at $destination; inspect its receipt before retrying"
+}
+
+main() {
+    umask 077
+    for command in curl sha256sum awk tar mktemp getconf uname; do
+        command -v "$command" >/dev/null 2>&1 || fail "required host command is missing: $command"
+    done
+    check_host
+    [ -n "${HOME:-}" ] || fail 'HOME is required for a user-owned installation'
+    case "$HOME" in /*) ;; *) fail 'HOME must be an absolute path' ;; esac
+    if [ -n "${XDG_DATA_HOME:-}" ]; then
+        case "$XDG_DATA_HOME" in /*) data_home=$XDG_DATA_HOME ;; *) fail 'XDG_DATA_HOME must be an absolute path' ;; esac
+    else
+        data_home=$HOME/.local/share
+    fi
+    install_root=$data_home/workbench
+    ancestor=$install_root
+    while [ "$ancestor" != / ]; do
+        [ ! -L "$ancestor" ] || fail "Workbench install path crosses a link: $ancestor"
+        ancestor=${ancestor%/*}
+        [ -n "$ancestor" ] || ancestor=/
+    done
+    mkdir -p "$install_root/installs" "$install_root/runtimes" "$install_root/bundles" "$install_root/bin"
+    lock=$install_root/.install-lock
+    mkdir "$lock" 2>/dev/null || fail "another install is active, or a prior lock needs inspection: $lock"
+    trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+
+    if already_installed; then
+        return
+    fi
+    [ ! -e "$install_root/bundles/$RELEASE_TAG" ] && [ ! -L "$install_root/bundles/$RELEASE_TAG" ] \
+        || fail "an existing bundle needs inspection: $install_root/bundles/$RELEASE_TAG"
+    python=$(prepare_python)
+    stage=$(mktemp -d "$install_root/.bundle.XXXXXXXX") || fail 'cannot create bundle staging directory'
+    archive=$stage/bundle.tar.gz
+    printf 'Downloading Workbench %s...\n' "$RELEASE_TAG" >&2
+    download "$BUNDLE_URL" "$archive"
+    verify_hash "$archive" "$BUNDLE_SHA256"
+    "$python" -I - "$archive" "$BUNDLE_DIRECTORY" <<'PY'
+import pathlib
+import sys
+import tarfile
+
+archive, expected_root = sys.argv[1:]
+seen = set()
+total_size = 0
+with tarfile.open(archive, "r:gz") as source:
+    for member in source:
+        path = pathlib.PurePosixPath(member.name)
+        if (path.is_absolute() or "\\" in member.name or ".." in path.parts
+                or not path.parts or path.parts[0] != expected_root
+                or not (member.isfile() or member.isdir())
+                or member.name in seen):
+            raise SystemExit(f"unsafe bundle archive member: {member.name}")
+        seen.add(member.name)
+        total_size += member.size
+        if len(seen) > 4096 or total_size > 2 * 1024**3:
+            raise SystemExit("bundle archive exceeds install limits")
+PY
+    mkdir "$stage/extracted"
+    tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$stage/extracted"
+    bundle=$stage/extracted/$BUNDLE_DIRECTORY
+    [ -d "$bundle" ] && [ ! -L "$bundle" ] || fail 'bundle archive has no expected root directory'
+    "$python" -I -B "$bundle/verify_install_bundle.py" "$bundle" --release-tag "$RELEASE_TAG"
+
+    destination=$install_root/installs/$RELEASE_TAG
+    "$python" -E -s -B "$bundle/wheelhouse/install_workbench.py" "$bundle/wheelhouse" --destination "$destination"
+    mv "$bundle" "$install_root/bundles/$RELEASE_TAG"
+    if [ ! -e "$install_root/bin/workbench" ] && [ ! -L "$install_root/bin/workbench" ]; then
+        ln -s "../installs/$RELEASE_TAG/bin/workbench" "$install_root/bin/workbench"
+    fi
+    if [ -x "$destination/bin/workbench-tui" ] \
+        && [ ! -e "$install_root/bin/workbench-tui" ] && [ ! -L "$install_root/bin/workbench-tui" ]; then
+        ln -s "../installs/$RELEASE_TAG/bin/workbench-tui" "$install_root/bin/workbench-tui"
+    fi
+    rm -f "$archive"
+    rmdir "$stage/extracted" "$stage"
+    hook_receipt=$(mktemp "$destination/.workbench-hook.XXXXXXXX") || fail 'cannot create final install receipt'
+    printf '{\n  "format": "workbench-hook-install-v1",\n  "state": "installed",\n  "release_tag": "%s",\n  "archive_sha256": "%s",\n  "python_runtime_id": "%s"\n}\n' \
+        "$RELEASE_TAG" "$BUNDLE_SHA256" "$PYTHON_RUNTIME_ID" > "$hook_receipt"
+    mv "$hook_receipt" "$destination/workbench-hook.json"
+    printf '\nWorkbench %s installed.\n' "$RELEASE_TAG"
+    if [ -x "$destination/bin/workbench-tui" ]; then
+        printf 'Open guided setup: %s/bin/workbench-tui\n' "$destination"
+    fi
+    printf 'Check setup: %s/bin/workbench setup --check\n' "$destination"
+    if [ "$BUNDLE_EDITION" = supersymmetry-client ]; then
+        printf 'Choose Set up Supersymmetry instance in the guided terminal.\n'
+    else
+        printf 'IDE clients: %s/bundles/%s/clients\n' "$install_root" "$RELEASE_TAG"
+    fi
+    printf 'Command shortcuts: %s/bin (add this directory to PATH if desired).\n' "$install_root"
+    printf 'Axiom engine ZIP: %s\n' \
+        "$install_root/bundles/$RELEASE_TAG"/axiom/workbench-axiom-engine-*.zip
+    printf 'No shell profile or existing installation was changed.\n'
+}
+
+main "$@"

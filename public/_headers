@@ -1,0 +1,10 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+
+/install.sh
+  Cache-Control: no-store
+
+/install.sh.sha256
+  Cache-Control: no-store
